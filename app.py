@@ -34,30 +34,13 @@ st.set_page_config(page_title="AI Surveillance", page_icon="🎥", layout="wide"
 
 st.markdown("""
 <style>
-.report-container { background-color: #f4f6fb; }
-.card { background-color: #ffffff; padding: 22px; border-radius: 22px; box-shadow: 0 18px 45px rgba(20, 40, 84, 0.08); margin: 16px 0; }
-.metric .stMetricValue {
-    font-size: 2.4rem !important;
-}
-.metric .stMetricLabel {
-    color: #344767 !important;
-}
-img {
-    border-radius: 16px;
-    transition: transform 0.18s ease-in-out, box-shadow 0.18s ease-in-out;
-}
-img:hover {
-    transform: scale(1.04);
-    box-shadow: 0 18px 40px rgba(0,0,0,0.18);
-}
-.section-title {
-    font-weight: 700;
-    margin-bottom: 10px;
-}
-.summary-card {
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255,255,255,0.18);
-}
+.main { background-color: #f5f7fa; }
+.card { background-color: white; padding: 20px; border-radius: 15px; box-shadow: 0px 4px 10px rgba(0,0,0,0.1); margin: 10px 0; }
+.metric { font-size: 36px; font-weight: bold; color: #1f77b4; }
+.threat-high { background-color: #f8d7da; padding: 15px; border-radius: 8px; color: #721c24; font-weight: bold; }
+.threat-medium { background-color: #fff3cd; padding: 15px; border-radius: 8px; color: #856404; font-weight: bold; }
+.threat-safe { background-color: #d4edda; padding: 15px; border-radius: 8px; color: #155724; font-weight: bold; }
+.event-card { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 15px; border-radius: 10px; margin: 8px 0; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -202,16 +185,14 @@ def process_frame(frame, model):
 
 def export_csv_report(event_summary, total_alerts, screenshot_count):
     """Export CSV."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     rows = []
     for event, data in event_summary.items():
-        risk = "HIGH" if data["max_threat"] > 70 else "MEDIUM" if data["max_threat"] > 50 else "SAFE"
+        risk = "HIGH" if event in THREAT_CLASSES else "LOW"
         rows.append({
             "Event": event,
             "Count": data["count"],
             "Max Threat": data["max_threat"],
-            "Risk": risk,
-            "Timestamp": timestamp
+            "Risk": risk
         })
     
     df = pd.DataFrame(rows)
@@ -219,36 +200,23 @@ def export_csv_report(event_summary, total_alerts, screenshot_count):
 
 def export_txt_report(event_summary, total_alerts, screenshot_count):
     """Export TXT."""
-    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-    average_threat = int(sum(data['max_threat'] for data in event_summary.values()) / len(event_summary)) if event_summary else 0
-
-    report = """
-============================================================
-AI SURVEILLANCE REPORT
-============================================================
-"""
-    report += f"Generated: {timestamp}\n\n"
-    report += "## 📊 SUMMARY\n"
-    report += f"Total Alerts      : {total_alerts}\n"
-    report += f"Screenshots       : {screenshot_count}\n"
-    report += f"Unique Events     : {len(event_summary)}\n"
-    report += f"Average Threat    : {average_threat}%\n\n"
-    report += "## 🚨 THREAT ANALYSIS\n"
-
+    text = "=" * 60 + "\n"
+    text += "AI SURVEILLANCE REPORT\n"
+    text += "=" * 60 + "\n\n"
+    text += f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    text += f"Total Alerts: {total_alerts}\n"
+    text += f"Screenshots: {screenshot_count}\n\n"
+    text += "THREATS DETECTED:\n"
+    text += "-" * 60 + "\n"
+    
     for event, data in event_summary.items():
-        risk = "HIGH" if data["max_threat"] > 70 else "MEDIUM" if data["max_threat"] > 50 else "SAFE"
-        report += f"\n🔴 {event.upper()}\n"
-        report += f"• Detections : {data['count']}\n"
-        report += f"• Max Threat : {data['max_threat']}%\n"
-        report += f"• Risk Level : {risk}\n"
-
-    report += "\n---\n"
-    report += "⚠ Risk Levels:\n"
-    report += "0–50   → SAFE\n"
-    report += "50–70  → MEDIUM\n"
-    report += "70+    → HIGH\n"
-    report += "============================================================\n"
-    return report.encode()
+        risk = "HIGH" if event in THREAT_CLASSES else "LOW"
+        text += f"\n{event.upper()}\n"
+        text += f"  Detections: {data['count']}\n"
+        text += f"  Max Threat: {data['max_threat']}%\n"
+        text += f"  Risk: {risk}\n"
+    
+    return text.encode()
 
 def summarize_events(events):
     """Summarize detections."""
@@ -261,38 +229,6 @@ def summarize_events(events):
             summary[label]["count"] += 1
             summary[label]["max_threat"] = max(summary[label]["max_threat"], event.get("threat", 0))
     return summary
-
-
-def format_risk_label(threat):
-    if threat > 70:
-        return "High"
-    if threat > 50:
-        return "Medium"
-    return "Safe"
-
-
-def render_event_cards(summary):
-    cols = st.columns(2)
-    for i, (event, data) in enumerate(summary.items()):
-        risk = format_risk_label(data["max_threat"])
-        color = "#ff6b6b" if risk == "High" else "#f7b955" if risk == "Medium" else "#5cd08d"
-        with cols[i % 2]:
-            st.markdown(f"""
-            <div style="
-                padding:18px;
-                border-radius:18px;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                box-shadow: 0 14px 28px rgba(0,0,0,0.18);
-                margin-bottom: 14px;">
-                <div style="font-size:18px;font-weight:700;margin-bottom:10px;">{event.title()}</div>
-                <div style="font-size:14px;line-height:1.7;">
-                    🔍 Count: {data['count']}<br>
-                    ⚡ Max Threat: {data['max_threat']}%<br>
-                    🚨 Risk: <span style="color:{color};font-weight:700;">{risk.upper()}</span>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
 
 # ============================================================
 # UI HEADER
@@ -465,8 +401,7 @@ if mode == "📷 Live Camera":
         
         # Download video
         if os.path.exists("output.avi") and os.path.getsize("output.avi") > 0:
-            st.markdown("### 🎥 Recorded Video")
-            st.info("Download recorded session below")
+            st.markdown("## 📹 Recorded Video")
             with open("output.avi", "rb") as f:
                 st.download_button(
                     "⬇️ Download Video",
@@ -478,40 +413,38 @@ if mode == "📷 Live Camera":
                 )
         
         st.markdown("---")
-        st.markdown("### 📊 Analytics Dashboard")
-        summary = summarize_events(st.session_state.suspicious_events)
-        total_alerts = st.session_state.alert_count
-        unique_events = len(summary)
-        screenshot_count = len(st.session_state.screenshots)
-        avg_threat = int(np.mean(st.session_state.threat_history)) if st.session_state.threat_history else 0
-        risk_level = format_risk_label(avg_threat)
-        risk_color = "#5cd08d" if risk_level == "Safe" else "#f7b955" if risk_level == "Medium" else "#ff6b6b"
+        st.markdown("## 📊 Analytics")
         
-        m1, m2, m3 = st.columns(3)
-        with m1:
-            st.metric("🚨 Total Alerts", total_alerts)
-        with m2:
-            st.metric("⚠ Unique Events", unique_events)
-        with m3:
-            st.metric("📸 Screenshots", screenshot_count)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("🚨 Alerts", st.session_state.alert_count)
+        with col2:
+            st.metric("⚠️ Events", len(set(e["label"] for e in st.session_state.suspicious_events)))
+        with col3:
+            st.metric("📸 Screenshots", len(st.session_state.screenshots))
         
-        st.markdown(f"<div class='card' style='padding:16px;border-radius:18px;margin-top:12px;'>" \
-                    f"<strong>System Risk:</strong> <span style='color:{risk_color};font-weight:700;'>{risk_level}</span> | " \
-                    f"Average Threat: {avg_threat}%</div>", unsafe_allow_html=True)
-        
+        # Timeline
         if st.session_state.threat_history:
-            st.markdown("#### 📈 Threat Timeline")
+            st.markdown("### 📈 Threat Timeline")
             df = pd.DataFrame({
                 "Frame": range(len(st.session_state.threat_history)),
                 "Threat %": list(st.session_state.threat_history)
             })
             st.line_chart(df, x="Frame", y="Threat %", use_container_width=True)
         
+        # Events
         if st.session_state.suspicious_events:
-            st.markdown("#### 📋 Event Summary")
-            render_event_cards(summary)
+            st.markdown("### 📋 Events")
+            summary = summarize_events(st.session_state.suspicious_events)
+            
+            cols = st.columns(2)
+            for i, (event, data) in enumerate(summary.items()):
+                with cols[i % 2]:
+                    risk = "🔴 HIGH" if event in THREAT_CLASSES else "🟡 LOW"
+                    st.markdown(f"**{event}** | {data['count']}x | {data['max_threat']}% | {risk}")
         
-        st.divider()
+        # Export
+        st.markdown("---")
         st.markdown("## 📄 Export Report")
         
         col1, col2 = st.columns(2)
@@ -540,21 +473,17 @@ if mode == "📷 Live Camera":
                     key="dl_txt_live"
                 )
         
+        # Screenshots
         if st.session_state.screenshots:
             st.markdown("---")
-            st.markdown("## 📸 Alert Snapshots")
-            display_screenshots = st.session_state.screenshots[-6:]
+            st.markdown("## 📸 Screenshots")
             cols = st.columns(3)
-            for i, path in enumerate(display_screenshots):
+            for i, path in enumerate(st.session_state.screenshots):
                 try:
                     img = cv2.imread(path)
                     if img is not None:
                         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                        caption = f"Alert {i+1}"
-                        if i < len(st.session_state.suspicious_events):
-                            evt = st.session_state.suspicious_events[i]
-                            caption += f" | {evt['label'].title()} | Threat: {evt['threat']}%"
-                        cols[i % 3].image(img_rgb, caption=caption, use_container_width=True)
+                        cols[i % 3].image(img_rgb, caption=f"Alert {i+1}", use_container_width=True)
                 except:
                     pass
 
@@ -633,41 +562,39 @@ elif mode == "📤 Upload Video":
         # Results
         if st.session_state.alert_count > 0:
             st.markdown("---")
-            st.markdown("### 📊 Analytics Dashboard")
-            summary = summarize_events(st.session_state.suspicious_events)
-            total_alerts = st.session_state.alert_count
-            unique_events = len(summary)
-            screenshot_count = len(st.session_state.screenshots)
-            avg_threat = int(np.mean(st.session_state.threat_history)) if st.session_state.threat_history else 0
-            risk_level = format_risk_label(avg_threat)
-            risk_color = "#5cd08d" if risk_level == "Safe" else "#f7b955" if risk_level == "Medium" else "#ff6b6b"
+            st.markdown("## 📊 Results")
             
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.metric("🚨 Total Alerts", total_alerts)
-            with c2:
-                st.metric("⚠ Unique Events", unique_events)
-            with c3:
-                st.metric("📸 Screenshots", screenshot_count)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("🚨 Alerts", st.session_state.alert_count)
+            with col2:
+                st.metric("⚠️ Events", len(set(e["label"] for e in st.session_state.suspicious_events)))
+            with col3:
+                st.metric("📸 Screenshots", len(st.session_state.screenshots))
             
-            st.markdown(f"<div class='card' style='padding:16px;border-radius:18px;margin-top:12px;'>" \
-                        f"<strong>System Risk:</strong> <span style='color:{risk_color};font-weight:700;'>{risk_level}</span> | " \
-                        f"Average Threat: {avg_threat}%</div>", unsafe_allow_html=True)
-            
+            # Timeline
             if st.session_state.threat_history:
-                st.markdown("#### 📈 Threat Timeline")
+                st.markdown("### 📈 Timeline")
                 df = pd.DataFrame({
                     "Frame": range(len(st.session_state.threat_history)),
                     "Threat %": list(st.session_state.threat_history)
                 })
                 st.line_chart(df, x="Frame", y="Threat %", use_container_width=True)
             
+            # Events
             if st.session_state.suspicious_events:
-                st.markdown("#### 📋 Event Summary")
-                render_event_cards(summary)
+                st.markdown("### 📋 Events")
+                summary = summarize_events(st.session_state.suspicious_events)
+                
+                cols = st.columns(2)
+                for i, (event, data) in enumerate(summary.items()):
+                    with cols[i % 2]:
+                        risk = "🔴 HIGH" if event in THREAT_CLASSES else "🟡 LOW"
+                        st.markdown(f"**{event}** | {data['count']}x | {data['max_threat']}% | {risk}")
             
-            st.divider()
-            st.markdown("## 📄 Export Report")
+            # Export
+            st.markdown("---")
+            st.markdown("## 📄 Export")
             
             col1, col2 = st.columns(2)
             if st.session_state.suspicious_events:
@@ -676,7 +603,7 @@ elif mode == "📤 Upload Video":
                 with col1:
                     csv = export_csv_report(summary, st.session_state.alert_count, len(st.session_state.screenshots))
                     st.download_button(
-                        "⬇ Download CSV Report",
+                        "📊 CSV",
                         csv,
                         "report.csv",
                         "text/csv",
@@ -687,7 +614,7 @@ elif mode == "📤 Upload Video":
                 with col2:
                     txt = export_txt_report(summary, st.session_state.alert_count, len(st.session_state.screenshots))
                     st.download_button(
-                        "⬇ Download Text Report",
+                        "📝 TXT",
                         txt,
                         "report.txt",
                         "text/plain",
@@ -695,21 +622,17 @@ elif mode == "📤 Upload Video":
                         key="dl_txt_upload"
                     )
             
+            # Screenshots
             if st.session_state.screenshots:
                 st.markdown("---")
-                st.markdown("## 📸 Alert Snapshots")
-                display_screenshots = st.session_state.screenshots[-6:]
+                st.markdown("## 📸 Screenshots")
                 cols = st.columns(3)
-                for i, path in enumerate(display_screenshots):
+                for i, path in enumerate(st.session_state.screenshots):
                     try:
                         img = cv2.imread(path)
                         if img is not None:
                             img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                            caption = f"Alert {i+1}"
-                            if i < len(st.session_state.suspicious_events):
-                                evt = st.session_state.suspicious_events[i]
-                                caption += f" | {evt['label'].title()} | Threat: {evt['threat']}%"
-                            cols[i % 3].image(img_rgb, caption=caption, use_container_width=True)
+                            cols[i % 3].image(img_rgb, caption=f"Alert {i+1}", use_container_width=True)
                     except:
                         pass
 
