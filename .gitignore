@@ -1,7 +1,44 @@
+# Python
 __pycache__/
 *.pyc
-.env
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
 venv/
-*.mp4
+env/
+.venv/
+
+# Environment secrets
+.env
+
+# Large output files
+output.avi
+output.mp4
 *.avi
+*.mp4
+surveillance_report_*.csv
+
+# Generated outputs (cloud writes to temp anyway)
+outputs/
+
+# Local screenshots (generated at runtime)
 screenshots/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.ipynb_checkpoints/
+
+# Large model files — yolov8n.pt is tracked (needed for HF Spaces)
+# yolov8s.pt is too large; exclude it
+yolov8s.pt
+
+# Scratch files
+implementation_plan.md
+alerts.png
+alarm.wav

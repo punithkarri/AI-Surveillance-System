@@ -1,7 +1,0 @@
-.env
-__pycache__/
-*.pyc
-outputs/
-screenshots/
-.DS_Store
-.ipynb_checkpoints/

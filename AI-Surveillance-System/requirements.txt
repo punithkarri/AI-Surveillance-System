@@ -1,8 +1,0 @@
-streamlit
-opencv-python-headless
-ultralytics
-plotly
-pandas
-numpy
-playsound
-python-dotenv

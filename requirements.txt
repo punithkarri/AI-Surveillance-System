@@ -1,6 +1,10 @@
-ultralytics
-opencv-python
 streamlit
-scikit-learn
-numpy
+opencv-python-headless
+ultralytics
+plotly
 pandas
+numpy
+playsound
+python-dotenv
+matplotlib
+pillow
