@@ -19,9 +19,9 @@ jobs:
           python-version: "3.10"
 
       - name: Install huggingface_hub
-        run: pip install huggingface_hub
+        run: pip install "huggingface_hub>=0.20"
 
-      - name: Push to Hugging Face Hub
+      - name: Clean stale files & Push to Hugging Face Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
@@ -34,17 +34,43 @@ jobs:
           repo_id = "karripunith/ai-surveillance-system"
           token = os.environ["HF_TOKEN"]
 
-          # Files/folders/extensions to skip
-          SKIP_DIRS = {".git", ".github", "__pycache__", ".vscode", "models", "outputs", "screenshots"}
+          # ── Step 1: Delete stale / unwanted files from the HF Space ──────────
+          # These files were uploaded incorrectly in previous runs.
+          STALE_HF_PATHS = [
+              "src/streamlit_app.py",   # old default Streamlit demo — must be gone
+              "streamlit/config.toml",  # uploaded at wrong path (missing leading dot)
+              "gitignore",              # uploaded without dot prefix
+              "gitattributes",          # uploaded without dot prefix
+              "env.example",            # should be .env.example
+              "Dockerfile",             # not needed for HF Spaces SDK=streamlit
+          ]
+          for hf_path in STALE_HF_PATHS:
+              try:
+                  api.delete_file(
+                      path_in_repo=hf_path,
+                      repo_id=repo_id,
+                      repo_type="space",
+                      token=token,
+                  )
+                  print(f"Deleted stale: {hf_path}")
+              except Exception as e:
+                  print(f"(skip delete {hf_path}: not found or already gone)")
+
+          # ── Step 2: Define what to skip ───────────────────────────────────────
+          SKIP_DIR_NAMES = {
+              ".git", ".github", "__pycache__", ".vscode",
+              "models", "outputs", "screenshots", "src",
+          }
           SKIP_FILES = {
               "yolov8n.pt", "yolov8s.pt",
               "output.avi", "output.mp4", "alarm.wav", "alerts.png",
               "implementation_plan.md", "IMPROVEMENTS.md",
               "surveillance_report_20260502_204641.csv",
           }
-          SKIP_EXTENSIONS = {".pt", ".avi", ".mp4", ".wav", ".pyc"}
+          SKIP_EXTENSIONS = {".pt", ".avi", ".mp4", ".wav", ".pyc", ".pyo"}
           MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
+          # ── Step 3: Upload ────────────────────────────────────────────────────
           root = Path(".")
           uploaded = []
           skipped = []
@@ -52,28 +78,44 @@ jobs:
           for path in sorted(root.rglob("*")):
               if path.is_dir():
                   continue
-              # Skip if any parent directory is in SKIP_DIRS
-              if any(part in SKIP_DIRS for part in path.parts):
-                  skipped.append(str(path))
-                  continue
-              # Skip hidden directories (e.g. .streamlit is OK, .git is not)
-              if any(p.startswith(".") and p not in {".streamlit", ".env.example", ".gitignore"} for p in path.parts[1:]):
-                  skipped.append(str(path))
-                  continue
-              # Skip specific files
-              if path.name in SKIP_FILES:
-                  skipped.append(str(path))
-                  continue
-              # Skip by extension
-              if path.suffix.lower() in SKIP_EXTENSIONS:
-                  skipped.append(str(path))
-                  continue
-              # Skip files > 10MB
-              if path.stat().st_size > MAX_SIZE:
-                  skipped.append(f"{path} (too large: {path.stat().st_size // 1024}KB)")
+
+              # Resolve relative path from project root (no leading ./)
+              rel = path.relative_to(root)          # e.g. PosixPath('.streamlit/config.toml')
+              rel_str = rel.as_posix()               # '.streamlit/config.toml'
+
+              # Skip if any directory component (not the filename) is in SKIP_DIR_NAMES
+              dir_parts = rel.parts[:-1]             # directories only
+              if any(d in SKIP_DIR_NAMES for d in dir_parts):
+                  skipped.append(rel_str)
                   continue
 
-              repo_path = str(path).replace("\\", "/").lstrip("./")
+              # Skip hidden dirs EXCEPT .streamlit
+              # Rule: if a DIRECTORY part starts with '.' and is not '.streamlit', skip it
+              if any(
+                  d.startswith(".") and d != ".streamlit"
+                  for d in dir_parts
+              ):
+                  skipped.append(rel_str)
+                  continue
+
+              # Skip specific filenames
+              if path.name in SKIP_FILES:
+                  skipped.append(rel_str)
+                  continue
+
+              # Skip by extension
+              if path.suffix.lower() in SKIP_EXTENSIONS:
+                  skipped.append(rel_str)
+                  continue
+
+              # Skip oversized files
+              size = path.stat().st_size
+              if size > MAX_SIZE:
+                  skipped.append(f"{rel_str} ({size // 1024}KB > 10MB limit)")
+                  continue
+
+              # HF repo path = rel_str exactly (preserves .streamlit/config.toml correctly)
+              repo_path = rel_str
               print(f"Uploading: {repo_path}")
               try:
                   api.upload_file(
@@ -85,9 +127,11 @@ jobs:
                   )
                   uploaded.append(repo_path)
               except Exception as e:
-                  print(f"  WARNING: Failed to upload {repo_path}: {e}")
+                  print(f"  WARNING: skip {repo_path}: {e}")
 
-          print(f"\n✅ Uploaded {len(uploaded)} files to {repo_id}")
-          if skipped:
-              print(f"⏭️  Skipped {len(skipped)} files (large/binary/excluded)")
+          print(f"\n✅ Uploaded {len(uploaded)} files")
+          print(f"⏭️  Skipped {len(skipped)} files")
+          print("\nUploaded:")
+          for f in sorted(uploaded):
+              print(f"  {f}")
           EOF
