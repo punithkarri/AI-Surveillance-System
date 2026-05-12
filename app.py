@@ -36,9 +36,24 @@ from utils.ui import (
     render_screenshot_grid,
 )
 
+# ── WebRTC imports (cloud-safe: only used in DEPLOYMENT_MODE) ─────────────────
+WEBRTC_AVAILABLE = False
+try:
+    from streamlit_webrtc import webrtc_streamer, RTCConfiguration, WebRtcMode
+    from services.webrtc_processor import SurveillanceProcessor, SharedState
+    WEBRTC_AVAILABLE = True
+except ImportError:
+    pass  # streamlit-webrtc not installed (local dev without it) — falls back to cv2
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 st.set_page_config(page_title="AI Surveillance System", page_icon="🎥", layout="wide")
 inject_custom_css()
+
+# ── WebRTC STUN configuration ─────────────────────────────────────────────────
+RTC_CONFIG = RTCConfiguration(
+    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+) if WEBRTC_AVAILABLE else None
 
 
 @st.cache_resource(show_spinner=False)
@@ -59,6 +74,8 @@ def init_session_state():
         "last_threat_score": 0,
         "analysis_complete": False,
         "upload_results": False,
+        # WebRTC shared state (persisted across reruns)
+        "webrtc_shared_state": None,
     }
     for key, default in defaults.items():
         if key not in st.session_state:
@@ -136,11 +153,193 @@ def save_video_if_ready(video_path):
             )
 
 
-def render_live_camera(model):
-    if DEPLOYMENT_MODE:
-        st.warning("Live Camera is unavailable in deployment mode. Switch to Upload Video.")
+# ═══════════════════════════════════════════════════════════════════════════════
+# WEBRTC LIVE CAMERA (cloud / Hugging Face Spaces)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _render_threat_gauge(threat_score: int):
+    """Render a color-coded threat level bar."""
+    color = "#ef4444" if threat_score >= THREAT_THRESHOLD else "#22c55e"
+    st.markdown(
+        f"""
+        <div style="margin:8px 0 4px 0;">
+            <span style="font-size:13px;color:#888;">Live Threat Level</span>
+        </div>
+        <div style="background:#1e293b;border-radius:8px;height:22px;width:100%;overflow:hidden;">
+            <div style="width:{threat_score}%;height:100%;background:{color};
+                        border-radius:8px;transition:width 0.3s;"></div>
+        </div>
+        <div style="font-size:20px;font-weight:700;color:{color};margin-top:4px;">
+            {threat_score}%
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_alarm_audio():
+    """
+    Inject an HTML5 audio element for browser-compatible alarm.
+    We use a data-URI beep (generated inline) so no file upload needed.
+    The browser may block autoplay — we also show a visual flash.
+    """
+    st.markdown(
+        """
+        <script>
+        (function() {
+            try {
+                var ctx = new (window.AudioContext || window.webkitAudioContext)();
+                var osc = ctx.createOscillator();
+                var gain = ctx.createGain();
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                osc.frequency.value = 880;
+                osc.type = 'square';
+                gain.gain.setValueAtTime(0.3, ctx.currentTime);
+                osc.start();
+                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+                osc.stop(ctx.currentTime + 0.4);
+            } catch(e) {}
+        })();
+        </script>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_webrtc_camera(model):
+    """
+    Cloud-mode live camera using streamlit-webrtc.
+    Frames are processed by SurveillanceProcessor in a background thread.
+    The main thread polls SharedState every ~0.5 s to refresh metrics.
+    """
+    if not WEBRTC_AVAILABLE:
+        st.error("⚠️ streamlit-webrtc is not installed. Please add it to requirements.txt.")
         return
 
+    st.markdown("<div class='card'><h2>📹 Live Browser Camera</h2></div>", unsafe_allow_html=True)
+    st.info(
+        "🌐 **Cloud Camera Mode** — Your browser will request webcam permission. "
+        "Detection runs live via YOLO. Allow camera access to start."
+    )
+
+    # Initialise / retrieve the shared state from session (persisted across reruns)
+    if st.session_state.webrtc_shared_state is None:
+        st.session_state.webrtc_shared_state = SharedState()
+    shared: SharedState = st.session_state.webrtc_shared_state
+
+    col_ctrl1, col_ctrl2 = st.columns(2)
+    with col_ctrl1:
+        if st.button("🔄 Reset Session Data", use_container_width=True):
+            shared.reset()
+            reset_session_state()
+            st.rerun()
+    with col_ctrl2:
+        alarm_enabled = st.session_state.alarm_enabled
+
+    # ── WebRTC streamer widget ────────────────────────────────────────────────
+    ctx = webrtc_streamer(
+        key="surveillance-webrtc",
+        mode=WebRtcMode.SENDRECV,
+        rtc_configuration=RTC_CONFIG,
+        video_processor_factory=lambda: SurveillanceProcessor(model, shared),
+        media_stream_constraints={"video": {"width": FRAME_WIDTH, "height": FRAME_HEIGHT}, "audio": False},
+        async_processing=True,
+    )
+
+    # ── Live metrics panel (updates while streaming) ──────────────────────────
+    st.markdown("---")
+    live_col1, live_col2 = st.columns([2, 1])
+
+    with live_col1:
+        threat_placeholder = st.empty()
+        alert_placeholder = st.empty()
+
+    with live_col2:
+        metric_placeholder = st.empty()
+
+    screenshot_placeholder = st.empty()
+    analytics_placeholder = st.empty()
+
+    # ── Polling loop — runs only while the WebRTC stream is active ────────────
+    if ctx.state.playing:
+        st.session_state.camera_active = True
+        poll_interval = 0.5  # seconds
+
+        while ctx.state.playing:
+            snap = shared.snapshot()
+
+            # Update threat gauge
+            with threat_placeholder.container():
+                _render_threat_gauge(snap["last_threat_score"])
+
+            # Flash alert if new alarm triggered
+            if snap["new_alert"]:
+                with alert_placeholder.container():
+                    st.error(f"🚨 ALERT! Threat detected — {snap['alert_count']} total alerts")
+                if alarm_enabled:
+                    _render_alarm_audio()
+                shared.clear_new_alert()
+            else:
+                with alert_placeholder.container():
+                    if snap["alert_count"] > 0:
+                        st.warning(f"⚠️ {snap['alert_count']} alerts logged this session")
+                    else:
+                        st.success("✅ Monitoring active — no threats detected")
+
+            # Sync shared state → session state for analytics panel
+            st.session_state.threat_history = snap["threat_history"]
+            st.session_state.suspicious_events = snap["suspicious_events"]
+            st.session_state.alert_count = snap["alert_count"]
+            st.session_state.screenshots = snap["screenshots"]
+
+            # Metric cards
+            with metric_placeholder.container():
+                render_metric_cards(
+                    snap["alert_count"],
+                    len(summarize_events(snap["suspicious_events"])),
+                    len(snap["screenshots"]),
+                )
+
+            # Live screenshots
+            with screenshot_placeholder.container():
+                render_screenshot_grid(snap["screenshots"])
+
+            # Live analytics (only if there's data)
+            if snap["threat_history"]:
+                with analytics_placeholder.container():
+                    st.plotly_chart(
+                        build_threat_timeline(snap["threat_history"]),
+                        use_container_width=True,
+                    )
+
+            time.sleep(poll_interval)
+
+    else:
+        st.session_state.camera_active = False
+
+    # ── Post-stream report ────────────────────────────────────────────────────
+    if not ctx.state.playing and st.session_state.alert_count > 0:
+        st.markdown("---")
+        st.markdown("### 📊 Session Summary")
+        render_analysis_panel()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOCALHOST LIVE CAMERA (unchanged from original)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def render_live_camera(model):
+    """
+    Route to the correct camera implementation:
+    - DEPLOYMENT_MODE=True  → streamlit-webrtc (browser WebCam, cloud-safe)
+    - DEPLOYMENT_MODE=False → cv2.VideoCapture (localhost only)
+    """
+    if DEPLOYMENT_MODE:
+        render_webrtc_camera(model)
+        return
+
+    # ── Original localhost cv2 path (100% unchanged) ──────────────────────────
     st.markdown("<div class='card'><h2>📹 Live Camera</h2></div>", unsafe_allow_html=True)
     col1, col2 = st.columns(2)
     with col1:
@@ -228,6 +427,10 @@ def render_live_camera(model):
             st.info("Deployment mode active: camera recording is disabled.")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# UPLOAD VIDEO MODE (unchanged)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def render_upload_mode(model):
     st.markdown("<div class='card'><h2>📤 Upload Video</h2></div>", unsafe_allow_html=True)
     uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov", "mkv"])
@@ -303,6 +506,10 @@ def render_upload_mode(model):
         st.info("No alerts were detected in the uploaded video.")
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def main():
     init_session_state()
     render_main_header()
@@ -310,7 +517,8 @@ def main():
 
     with st.sidebar:
         st.title("⚙️ Controls")
-        mode_options = ["Upload Video"] if DEPLOYMENT_MODE else ["Live Camera", "Upload Video"]
+        # In cloud mode Live Camera is now supported via WebRTC
+        mode_options = ["Live Camera", "Upload Video"]
         mode = st.radio("Select mode", mode_options)
         st.markdown("---")
         st.markdown("**Model status**")
@@ -320,26 +528,26 @@ def main():
             st.error("✗ Model failed to load")
         st.markdown("---")
         st.session_state.alarm_enabled = st.checkbox("Enable alarm", value=st.session_state.alarm_enabled)
-        st.markdown(f"**Deployment mode:** {'ON' if DEPLOYMENT_MODE else 'OFF'}")
+        st.markdown(f"**Deployment mode:** {'ON ☁️' if DEPLOYMENT_MODE else 'OFF 🖥️'}")
         if DEPLOYMENT_MODE:
-            st.warning("🌐 Cloud mode active — use Upload Video for safer processing.")
-            st.info("Local webcam and recording are disabled in deployment mode.")
+            st.info("🌐 Cloud mode — browser WebCam via WebRTC")
         st.markdown("---")
         st.markdown("**Report outputs**")
-        st.write(f"Videos: {VIDEO_OUTPUT_DIR}")
         st.write(f"Reports: {REPORT_OUTPUT_DIR}")
         st.write(f"Snapshots: {SNAPSHOT_OUTPUT_DIR}")
 
     if mode == "Live Camera":
-        if DEPLOYMENT_MODE:
-            st.warning("Live Camera mode is disabled in cloud deployment mode.")
-        else:
-            render_live_camera(model)
+        render_live_camera(model)
     else:
         render_upload_mode(model)
 
     st.markdown("---")
-    st.markdown("<div style='text-align:center;color:gray;font-size:12px;'>Deployment-ready architecture with modular services and centralized config.</div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div style='text-align:center;color:gray;font-size:12px;'>"
+        "Deployment-ready architecture with modular services and centralized config."
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":

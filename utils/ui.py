@@ -85,9 +85,10 @@ def render_screenshot_grid(image_paths):
     for idx, path in enumerate(image_paths):
         try:
             image = Path(path)
-            if image.exists():
-                st.image(str(image), caption=image.name, use_column_width=True)
-            else:
-                st.markdown(f"*Missing image: {path}*")
+            with cols[idx % 3]:
+                if image.exists():
+                    st.image(str(image), caption=image.name, use_container_width=True)
+                else:
+                    st.markdown(f"*Missing image: {path}*")
         except Exception:
             st.markdown(f"*Unable to load screenshot: {path}*")

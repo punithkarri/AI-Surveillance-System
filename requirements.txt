@@ -7,3 +7,5 @@ numpy
 python-dotenv
 matplotlib
 pillow
+streamlit-webrtc
+av
