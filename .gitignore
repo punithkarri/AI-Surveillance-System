@@ -16,6 +16,13 @@ env/
 # Large output files
 output.avi
 output.mp4
+# Large models and media
+*.pt
+*.png
+*.wav
+*.csv
+implementation_plan.md
+
 *.avi
 *.mp4
 surveillance_report_*.csv
