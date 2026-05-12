@@ -8,11 +8,86 @@ jobs:
   sync-to-hub:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          lfs: true
-      - name: Push to hub
+          fetch-depth: 1
+          lfs: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install huggingface_hub
+        run: pip install huggingface_hub
+
+      - name: Push to Hugging Face Hub
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: git push --force https://karripunith:$HF_TOKEN@huggingface.co/spaces/karripunith/ai-surveillance-system main
+        run: |
+          python - <<'EOF'
+          import os
+          from pathlib import Path
+          from huggingface_hub import HfApi
+
+          api = HfApi()
+          repo_id = "karripunith/ai-surveillance-system"
+          token = os.environ["HF_TOKEN"]
+
+          # Files/folders/extensions to skip
+          SKIP_DIRS = {".git", ".github", "__pycache__", ".vscode", "models", "outputs", "screenshots"}
+          SKIP_FILES = {
+              "yolov8n.pt", "yolov8s.pt",
+              "output.avi", "output.mp4", "alarm.wav", "alerts.png",
+              "implementation_plan.md", "IMPROVEMENTS.md",
+              "surveillance_report_20260502_204641.csv",
+          }
+          SKIP_EXTENSIONS = {".pt", ".avi", ".mp4", ".wav", ".pyc"}
+          MAX_SIZE = 10 * 1024 * 1024  # 10 MB
+
+          root = Path(".")
+          uploaded = []
+          skipped = []
+
+          for path in sorted(root.rglob("*")):
+              if path.is_dir():
+                  continue
+              # Skip if any parent directory is in SKIP_DIRS
+              if any(part in SKIP_DIRS for part in path.parts):
+                  skipped.append(str(path))
+                  continue
+              # Skip hidden directories (e.g. .streamlit is OK, .git is not)
+              if any(p.startswith(".") and p not in {".streamlit", ".env.example", ".gitignore"} for p in path.parts[1:]):
+                  skipped.append(str(path))
+                  continue
+              # Skip specific files
+              if path.name in SKIP_FILES:
+                  skipped.append(str(path))
+                  continue
+              # Skip by extension
+              if path.suffix.lower() in SKIP_EXTENSIONS:
+                  skipped.append(str(path))
+                  continue
+              # Skip files > 10MB
+              if path.stat().st_size > MAX_SIZE:
+                  skipped.append(f"{path} (too large: {path.stat().st_size // 1024}KB)")
+                  continue
+
+              repo_path = str(path).replace("\\", "/").lstrip("./")
+              print(f"Uploading: {repo_path}")
+              try:
+                  api.upload_file(
+                      path_or_fileobj=str(path),
+                      path_in_repo=repo_path,
+                      repo_id=repo_id,
+                      repo_type="space",
+                      token=token,
+                  )
+                  uploaded.append(repo_path)
+              except Exception as e:
+                  print(f"  WARNING: Failed to upload {repo_path}: {e}")
+
+          print(f"\n✅ Uploaded {len(uploaded)} files to {repo_id}")
+          if skipped:
+              print(f"⏭️  Skipped {len(skipped)} files (large/binary/excluded)")
+          EOF

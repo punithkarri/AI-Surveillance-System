@@ -34,8 +34,9 @@ Thumbs.db
 .vscode/
 .ipynb_checkpoints/
 
-# Large model files — yolov8n.pt is tracked (needed for HF Spaces)
-# yolov8s.pt is too large; exclude it
+# Large model files — excluded from git, downloaded at runtime on HF Spaces
+*.pt
+yolov8n.pt
 yolov8s.pt
 
 # Scratch files
