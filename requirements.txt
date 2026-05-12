@@ -4,7 +4,6 @@ ultralytics
 plotly
 pandas
 numpy
-playsound
 python-dotenv
 matplotlib
 pillow
