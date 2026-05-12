@@ -11,22 +11,17 @@ Usage:
 import threading
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import List, Optional
+from typing import List
 
 import av
 import cv2
-import numpy as np
 
 from config.settings import (
-    CONFIDENCE_THRESHOLD,
     FRAME_HEIGHT,
     FRAME_WIDTH,
     MAX_SCREENSHOTS,
     SNAPSHOT_OUTPUT_DIR,
     THREAT_THRESHOLD,
-    THREAT_CLASS_SCORES,
-    ALLOWED_CLASSES,
 )
 from services.detection import process_frame
 from services.alerts import capture_snapshot, should_alert
@@ -36,28 +31,34 @@ try:
     WEBRTC_AVAILABLE = True
 except ImportError:
     WEBRTC_AVAILABLE = False
-    # Stub so the module can be imported safely even without streamlit-webrtc
-    class VideoProcessorBase:
+
+    class VideoProcessorBase:  # type: ignore[misc]
+        """Stub — allows module to import safely without streamlit-webrtc."""
         def recv(self, frame):
             return frame
 
 
 @dataclass
 class SharedState:
-    """Thread-safe container for live metrics shared between WebRTC BG thread and Streamlit main thread."""
+    """
+    Thread-safe container for live metrics.
+
+    Written by the WebRTC background thread (SurveillanceProcessor.recv).
+    Read by the Streamlit main thread on every rerun.
+    All access is guarded by _lock.
+    """
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    # Metrics (written by BG thread, read by main thread)
     threat_history: List[int] = field(default_factory=list)
     suspicious_events: List[dict] = field(default_factory=list)
     alert_count: int = 0
     screenshots: List[str] = field(default_factory=list)
     last_threat_score: int = 0
     last_frame_ts: float = 0.0
-    new_alert: bool = False  # flag: main thread reads this to trigger visual alarm
+    new_alert: bool = False
 
-    def snapshot(self):
-        """Return a consistent copy of the current state (main thread safe)."""
+    def snapshot(self) -> dict:
+        """Return a consistent shallow copy — safe to call from main thread."""
         with self._lock:
             return {
                 "threat_history": list(self.threat_history),
@@ -68,11 +69,11 @@ class SharedState:
                 "new_alert": self.new_alert,
             }
 
-    def clear_new_alert(self):
+    def clear_new_alert(self) -> None:
         with self._lock:
             self.new_alert = False
 
-    def reset(self):
+    def reset(self) -> None:
         with self._lock:
             self.threat_history.clear()
             self.suspicious_events.clear()
@@ -85,46 +86,45 @@ class SharedState:
 
 class SurveillanceProcessor(VideoProcessorBase):
     """
-    WebRTC video processor.
+    WebRTC video processor (runs in background thread).
 
-    - Receives raw video frames from the browser via WebRTC.
-    - Runs YOLO inference via process_frame().
-    - Returns annotated frame (with bounding boxes) back to browser.
-    - Updates SharedState for the Streamlit main thread to read.
+    Receives raw BGR frames from the browser via WebRTC, runs YOLO inference,
+    draws bounding boxes, returns annotated RGB frame back to the browser,
+    and writes threat metrics to SharedState for the main thread to read.
 
-    IMPORTANT: recv() runs in a background thread — never call st.* here.
+    IMPORTANT: Never call st.* functions here — this is a background thread.
     """
 
-    def __init__(self, model, shared_state: SharedState):
+    def __init__(self, model, shared_state: SharedState) -> None:
         self.model = model
         self.state = shared_state
-        self._last_screenshot_ts = 0.0
-        self._alarm_cooldown_ts = 0.0
+        self._last_screenshot_ts: float = 0.0
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        """Process one incoming frame, return annotated frame."""
+        """Process one incoming video frame and return the annotated version."""
         try:
-            # Convert PyAV frame → numpy BGR (OpenCV format)
+            # PyAV VideoFrame → numpy BGR
             img = frame.to_ndarray(format="bgr24")
 
-            # Resize to our standard dimensions for consistent inference speed
+            # Resize for consistent, efficient inference
             img_resized = cv2.resize(img, (FRAME_WIDTH, FRAME_HEIGHT))
 
-            # Run YOLO inference
+            # YOLO inference — returns (annotated_bgr, detections_list, threat_score_int)
             annotated, detections, threat_score = process_frame(img_resized.copy(), self.model)
 
-            # Update shared state (thread-safe)
+            now = time.time()
+
             with self.state._lock:
+                # Threat history (bounded to 500 entries to prevent memory growth)
                 self.state.threat_history.append(threat_score)
-                # Keep history bounded to prevent memory growth
                 if len(self.state.threat_history) > 500:
                     self.state.threat_history = self.state.threat_history[-500:]
 
                 prev_threat = self.state.last_threat_score
                 self.state.last_threat_score = threat_score
-                self.state.last_frame_ts = time.time()
+                self.state.last_frame_ts = now
 
-                # Alert logic
+                # Rising-edge alert
                 if should_alert(prev_threat, threat_score, THREAT_THRESHOLD):
                     self.state.alert_count += 1
                     self.state.new_alert = True
@@ -135,8 +135,7 @@ class SurveillanceProcessor(VideoProcessorBase):
                             "threat": int(det["confidence"] * 100),
                         })
 
-                # Screenshot: max every 3 seconds, up to MAX_SCREENSHOTS
-                now = time.time()
+                # Auto-screenshot: max every 3 s, cap at MAX_SCREENSHOTS
                 if (
                     threat_score > THREAT_THRESHOLD
                     and len(self.state.screenshots) < MAX_SCREENSHOTS
@@ -147,10 +146,10 @@ class SurveillanceProcessor(VideoProcessorBase):
                         self.state.screenshots.append(str(path))
                         self._last_screenshot_ts = now
 
-            # Convert annotated BGR frame back to RGB for WebRTC
+            # BGR → RGB for WebRTC output
             annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
             return av.VideoFrame.from_ndarray(annotated_rgb, format="rgb24")
 
         except Exception:
-            # Never crash the WebRTC stream — return the original frame unchanged
+            # Never crash the WebRTC stream — return the original frame
             return frame

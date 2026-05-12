@@ -1,3 +1,17 @@
+"""
+AI Surveillance System — Streamlit App
+=======================================
+Entry point for both local and Hugging Face Spaces deployment.
+
+Routing logic:
+  DEPLOYMENT_MODE=True  (HF Spaces / SPACE_ID env var set)
+      → Live camera via streamlit-webrtc (browser WebRTC, non-blocking)
+  DEPLOYMENT_MODE=False (localhost)
+      → Live camera via cv2.VideoCapture(0)
+
+Upload Video mode works identically in both environments.
+"""
+
 import tempfile
 import time
 from pathlib import Path
@@ -6,7 +20,6 @@ import cv2
 import streamlit as st
 
 from config.settings import (
-    ALARM_SOUND_FILE,
     DEPLOYMENT_MODE,
     ENABLE_CAMERA,
     ENABLE_RECORDING,
@@ -25,7 +38,6 @@ from services.recording import VideoRecorder
 from services.reporting import (
     export_csv_report,
     export_txt_report,
-    save_report_files,
     summarize_events,
 )
 from utils.helpers import ensure_folder, get_timestamp_string
@@ -36,30 +48,44 @@ from utils.ui import (
     render_screenshot_grid,
 )
 
-# ── WebRTC imports (cloud-safe: only used in DEPLOYMENT_MODE) ─────────────────
+# ── WebRTC (cloud-safe import) ────────────────────────────────────────────────
 WEBRTC_AVAILABLE = False
-try:
-    from streamlit_webrtc import webrtc_streamer, RTCConfiguration, WebRtcMode
-    from services.webrtc_processor import SurveillanceProcessor, SharedState
-    WEBRTC_AVAILABLE = True
-except ImportError:
-    pass  # streamlit-webrtc not installed (local dev without it) — falls back to cv2
+if DEPLOYMENT_MODE:
+    try:
+        from streamlit_webrtc import webrtc_streamer, RTCConfiguration, WebRtcMode
+        from services.webrtc_processor import SurveillanceProcessor, SharedState
+        WEBRTC_AVAILABLE = True
+    except Exception:
+        pass  # Graceful fallback if not installed
 
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.set_page_config(page_title="AI Surveillance System", page_icon="🎥", layout="wide")
+# ── Page config ───────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="AI Surveillance System",
+    page_icon="🎥",
+    layout="wide",
+)
 inject_custom_css()
 
 # ── WebRTC STUN configuration ─────────────────────────────────────────────────
-RTC_CONFIG = RTCConfiguration(
-    {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-) if WEBRTC_AVAILABLE else None
+RTC_CONFIG = None
+if WEBRTC_AVAILABLE:
+    RTC_CONFIG = RTCConfiguration(
+        {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+    )
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Model loading
+# ─────────────────────────────────────────────────────────────────────────────
 
 @st.cache_resource(show_spinner=False)
 def get_model():
     return load_model()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Session state helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def init_session_state():
     defaults = {
@@ -74,12 +100,11 @@ def init_session_state():
         "last_threat_score": 0,
         "analysis_complete": False,
         "upload_results": False,
-        # WebRTC shared state (persisted across reruns)
-        "webrtc_shared_state": None,
+        "webrtc_shared_state": None,  # SharedState instance (cloud mode)
     }
-    for key, default in defaults.items():
+    for key, val in defaults.items():
         if key not in st.session_state:
-            st.session_state[key] = default
+            st.session_state[key] = val
 
 
 def reset_session_state():
@@ -93,18 +118,27 @@ def reset_session_state():
     st.session_state.video_path = None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Shared UI helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
 def render_main_header():
     st.markdown("<h1>🎥 AI Surveillance System</h1>", unsafe_allow_html=True)
-    st.markdown("<p>Real-time YOLO detection, threat analysis, recording, export and analytics.</p>", unsafe_allow_html=True)
+    st.markdown(
+        "<p>Real-time YOLO detection · Threat analysis · Analytics · Reports</p>",
+        unsafe_allow_html=True,
+    )
     st.markdown("---")
 
 
 def render_export_buttons(summary):
     if not summary:
         return
-    cols = st.columns(2)
-    with cols[0]:
-        csv_bytes = export_csv_report(summary, st.session_state.alert_count, len(st.session_state.screenshots))
+    col1, col2 = st.columns(2)
+    with col1:
+        csv_bytes = export_csv_report(
+            summary, st.session_state.alert_count, len(st.session_state.screenshots)
+        )
         st.download_button(
             "⬇ Download CSV Report",
             data=csv_bytes,
@@ -112,8 +146,10 @@ def render_export_buttons(summary):
             mime="text/csv",
             use_container_width=True,
         )
-    with cols[1]:
-        txt_bytes = export_txt_report(summary, st.session_state.alert_count, len(st.session_state.screenshots))
+    with col2:
+        txt_bytes = export_txt_report(
+            summary, st.session_state.alert_count, len(st.session_state.screenshots)
+        )
         st.download_button(
             "⬇ Download TXT Report",
             data=txt_bytes,
@@ -126,50 +162,45 @@ def render_export_buttons(summary):
 def render_analysis_panel():
     st.markdown("---")
     st.markdown("## 📊 Analytics")
+    summary = summarize_events(st.session_state.suspicious_events)
     render_metric_cards(
         st.session_state.alert_count,
-        len(summarize_events(st.session_state.suspicious_events)),
+        len(summary),
         len(st.session_state.screenshots),
     )
     if st.session_state.threat_history:
-        st.plotly_chart(build_threat_timeline(st.session_state.threat_history), use_container_width=True)
-    summary = summarize_events(st.session_state.suspicious_events)
+        st.plotly_chart(
+            build_threat_timeline(st.session_state.threat_history),
+            use_container_width=True,
+        )
     if summary:
-        st.plotly_chart(build_risk_pie(summary), use_container_width=True)
+        pie = build_risk_pie(summary)
+        if pie:
+            st.plotly_chart(pie, use_container_width=True)
         render_event_cards(summary)
     render_export_buttons(summary)
     render_screenshot_grid(st.session_state.screenshots)
 
 
-def save_video_if_ready(video_path):
-    if video_path and Path(video_path).exists():
-        with open(video_path, "rb") as f:
-            st.download_button(
-                "📥 Download Recorded Video",
-                data=f.read(),
-                file_name=Path(video_path).name,
-                mime="video/x-msvideo",
-                use_container_width=True,
-            )
-
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# WEBRTC LIVE CAMERA (cloud / Hugging Face Spaces)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# WebRTC helpers
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _render_threat_gauge(threat_score: int):
-    """Render a color-coded threat level bar."""
+    """Render a colour-coded live threat bar."""
     color = "#ef4444" if threat_score >= THREAT_THRESHOLD else "#22c55e"
+    label = "🔴 HIGH THREAT" if threat_score >= THREAT_THRESHOLD else "🟢 SAFE"
     st.markdown(
         f"""
-        <div style="margin:8px 0 4px 0;">
+        <div style="margin:8px 0 4px 0;display:flex;justify-content:space-between;">
             <span style="font-size:13px;color:#888;">Live Threat Level</span>
+            <span style="font-size:13px;font-weight:600;color:{color};">{label}</span>
         </div>
-        <div style="background:#1e293b;border-radius:8px;height:22px;width:100%;overflow:hidden;">
+        <div style="background:#1e293b;border-radius:8px;height:24px;width:100%;overflow:hidden;">
             <div style="width:{threat_score}%;height:100%;background:{color};
                         border-radius:8px;transition:width 0.3s;"></div>
         </div>
-        <div style="font-size:20px;font-weight:700;color:{color};margin-top:4px;">
+        <div style="font-size:28px;font-weight:700;color:{color};margin-top:4px;">
             {threat_score}%
         </div>
         """,
@@ -177,28 +208,31 @@ def _render_threat_gauge(threat_score: int):
     )
 
 
-def _render_alarm_audio():
-    """
-    Inject an HTML5 audio element for browser-compatible alarm.
-    We use a data-URI beep (generated inline) so no file upload needed.
-    The browser may block autoplay — we also show a visual flash.
-    """
+def _inject_alarm_beep():
+    """Inject a browser-compatible AudioContext beep (will only play after user gesture)."""
     st.markdown(
         """
         <script>
         (function() {
             try {
-                var ctx = new (window.AudioContext || window.webkitAudioContext)();
-                var osc = ctx.createOscillator();
-                var gain = ctx.createGain();
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                osc.frequency.value = 880;
-                osc.type = 'square';
-                gain.gain.setValueAtTime(0.3, ctx.currentTime);
-                osc.start();
-                gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
-                osc.stop(ctx.currentTime + 0.4);
+                var AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                var ctx = new AudioCtx();
+                function beep(freq, start, duration) {
+                    var osc = ctx.createOscillator();
+                    var gain = ctx.createGain();
+                    osc.connect(gain);
+                    gain.connect(ctx.destination);
+                    osc.frequency.value = freq;
+                    osc.type = 'square';
+                    gain.gain.setValueAtTime(0.25, ctx.currentTime + start);
+                    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + start + duration);
+                    osc.start(ctx.currentTime + start);
+                    osc.stop(ctx.currentTime + start + duration);
+                }
+                beep(880, 0,    0.2);
+                beep(660, 0.25, 0.2);
+                beep(880, 0.5,  0.2);
             } catch(e) {}
         })();
         </script>
@@ -207,163 +241,171 @@ def _render_alarm_audio():
     )
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLOUD CAMERA — streamlit-webrtc (non-blocking, rerun-based)
+# ─────────────────────────────────────────────────────────────────────────────
+
 def render_webrtc_camera(model):
     """
-    Cloud-mode live camera using streamlit-webrtc.
-    Frames are processed by SurveillanceProcessor in a background thread.
-    The main thread polls SharedState every ~0.5 s to refresh metrics.
+    Cloud live camera using streamlit-webrtc.
+
+    Key design: NO blocking loops on the main thread.
+    The WebRTC processor runs in its own background thread.
+    Each Streamlit rerun reads a snapshot from SharedState and updates the UI.
+    st.rerun() is called at the end to keep metrics refreshing while streaming.
     """
     if not WEBRTC_AVAILABLE:
-        st.error("⚠️ streamlit-webrtc is not installed. Please add it to requirements.txt.")
+        st.error(
+            "⚠️ streamlit-webrtc is not available in this environment. "
+            "Please ensure `streamlit-webrtc` and `av` are in requirements.txt."
+        )
         return
 
-    st.markdown("<div class='card'><h2>📹 Live Browser Camera</h2></div>", unsafe_allow_html=True)
+    st.markdown(
+        "<div class='card'><h2>📹 Live Browser Camera</h2></div>",
+        unsafe_allow_html=True,
+    )
     st.info(
-        "🌐 **Cloud Camera Mode** — Your browser will request webcam permission. "
-        "Detection runs live via YOLO. Allow camera access to start."
+        "🌐 **Cloud Camera Mode** — Click **START** below, then allow webcam access "
+        "when your browser asks. YOLO detection runs live on every frame."
     )
 
-    # Initialise / retrieve the shared state from session (persisted across reruns)
+    # ── Initialise SharedState (persists across reruns in session) ─────────
     if st.session_state.webrtc_shared_state is None:
         st.session_state.webrtc_shared_state = SharedState()
     shared: SharedState = st.session_state.webrtc_shared_state
 
-    col_ctrl1, col_ctrl2 = st.columns(2)
-    with col_ctrl1:
-        if st.button("🔄 Reset Session Data", use_container_width=True):
+    # ── Reset button ───────────────────────────────────────────────────────
+    col_r, col_a = st.columns(2)
+    with col_r:
+        if st.button("🔄 Reset Session", use_container_width=True, key="webrtc_reset"):
             shared.reset()
             reset_session_state()
             st.rerun()
-    with col_ctrl2:
-        alarm_enabled = st.session_state.alarm_enabled
+    with col_a:
+        st.session_state.alarm_enabled = st.checkbox(
+            "🔔 Enable alarm sound",
+            value=st.session_state.alarm_enabled,
+            key="webrtc_alarm_chk",
+        )
 
-    # ── WebRTC streamer widget ────────────────────────────────────────────────
+    # ── WebRTC streamer widget ─────────────────────────────────────────────
     ctx = webrtc_streamer(
         key="surveillance-webrtc",
         mode=WebRtcMode.SENDRECV,
         rtc_configuration=RTC_CONFIG,
         video_processor_factory=lambda: SurveillanceProcessor(model, shared),
-        media_stream_constraints={"video": {"width": FRAME_WIDTH, "height": FRAME_HEIGHT}, "audio": False},
+        media_stream_constraints={
+            "video": {"width": {"ideal": FRAME_WIDTH}, "height": {"ideal": FRAME_HEIGHT}},
+            "audio": False,
+        },
         async_processing=True,
     )
 
-    # ── Live metrics panel (updates while streaming) ──────────────────────────
+    streaming = ctx.state.playing
+
+    # ── Take a thread-safe snapshot of current metrics ─────────────────────
+    snap = shared.snapshot()
+
+    # ── Sync shared → session state (for analytics panel) ─────────────────
+    st.session_state.threat_history = snap["threat_history"]
+    st.session_state.suspicious_events = snap["suspicious_events"]
+    st.session_state.alert_count = snap["alert_count"]
+    st.session_state.screenshots = snap["screenshots"]
+
+    # ── Live metrics panel ─────────────────────────────────────────────────
     st.markdown("---")
-    live_col1, live_col2 = st.columns([2, 1])
 
-    with live_col1:
-        threat_placeholder = st.empty()
-        alert_placeholder = st.empty()
-
-    with live_col2:
-        metric_placeholder = st.empty()
-
-    screenshot_placeholder = st.empty()
-    analytics_placeholder = st.empty()
-
-    # ── Polling loop — runs only while the WebRTC stream is active ────────────
-    if ctx.state.playing:
+    if streaming:
         st.session_state.camera_active = True
-        poll_interval = 0.5  # seconds
 
-        while ctx.state.playing:
-            snap = shared.snapshot()
+        live_col1, live_col2 = st.columns([3, 2])
 
-            # Update threat gauge
-            with threat_placeholder.container():
-                _render_threat_gauge(snap["last_threat_score"])
+        with live_col1:
+            _render_threat_gauge(snap["last_threat_score"])
 
-            # Flash alert if new alarm triggered
             if snap["new_alert"]:
-                with alert_placeholder.container():
-                    st.error(f"🚨 ALERT! Threat detected — {snap['alert_count']} total alerts")
-                if alarm_enabled:
-                    _render_alarm_audio()
-                shared.clear_new_alert()
-            else:
-                with alert_placeholder.container():
-                    if snap["alert_count"] > 0:
-                        st.warning(f"⚠️ {snap['alert_count']} alerts logged this session")
-                    else:
-                        st.success("✅ Monitoring active — no threats detected")
-
-            # Sync shared state → session state for analytics panel
-            st.session_state.threat_history = snap["threat_history"]
-            st.session_state.suspicious_events = snap["suspicious_events"]
-            st.session_state.alert_count = snap["alert_count"]
-            st.session_state.screenshots = snap["screenshots"]
-
-            # Metric cards
-            with metric_placeholder.container():
-                render_metric_cards(
-                    snap["alert_count"],
-                    len(summarize_events(snap["suspicious_events"])),
-                    len(snap["screenshots"]),
+                st.error(
+                    f"🚨 **THREAT DETECTED!** Total alerts this session: {snap['alert_count']}"
                 )
+                if st.session_state.alarm_enabled:
+                    _inject_alarm_beep()
+                shared.clear_new_alert()
+            elif snap["alert_count"] > 0:
+                st.warning(f"⚠️ {snap['alert_count']} alert(s) logged this session")
+            else:
+                st.success("✅ Monitoring active — no threats detected")
 
-            # Live screenshots
-            with screenshot_placeholder.container():
-                render_screenshot_grid(snap["screenshots"])
+        with live_col2:
+            summary_live = summarize_events(snap["suspicious_events"])
+            render_metric_cards(
+                snap["alert_count"],
+                len(summary_live),
+                len(snap["screenshots"]),
+            )
 
-            # Live analytics (only if there's data)
-            if snap["threat_history"]:
-                with analytics_placeholder.container():
-                    st.plotly_chart(
-                        build_threat_timeline(snap["threat_history"]),
-                        use_container_width=True,
-                    )
+        # Live threat timeline
+        if snap["threat_history"]:
+            st.plotly_chart(
+                build_threat_timeline(snap["threat_history"]),
+                use_container_width=True,
+            )
 
-            time.sleep(poll_interval)
+        # Live screenshots
+        render_screenshot_grid(snap["screenshots"])
+
+        # ── Refresh every ~1 second while streaming ──────────────────────
+        # This is the correct non-blocking pattern for streamlit-webrtc:
+        # sleep briefly then rerun; the WebRTC BG thread continues uninterrupted.
+        time.sleep(1.0)
+        st.rerun()
 
     else:
         st.session_state.camera_active = False
+        if snap["alert_count"] > 0:
+            st.markdown("### 📊 Session Summary")
+            render_analysis_panel()
+        else:
+            st.markdown(
+                "<div style='text-align:center;padding:40px;color:#888;'>"
+                "Click <strong>START</strong> to begin live surveillance</div>",
+                unsafe_allow_html=True,
+            )
 
-    # ── Post-stream report ────────────────────────────────────────────────────
-    if not ctx.state.playing and st.session_state.alert_count > 0:
-        st.markdown("---")
-        st.markdown("### 📊 Session Summary")
-        render_analysis_panel()
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# LOCALHOST LIVE CAMERA (unchanged from original)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
+# LOCALHOST CAMERA — cv2.VideoCapture (unchanged)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def render_live_camera(model):
-    """
-    Route to the correct camera implementation:
-    - DEPLOYMENT_MODE=True  → streamlit-webrtc (browser WebCam, cloud-safe)
-    - DEPLOYMENT_MODE=False → cv2.VideoCapture (localhost only)
-    """
+    """Route to WebRTC (cloud) or cv2 (localhost) based on DEPLOYMENT_MODE."""
     if DEPLOYMENT_MODE:
         render_webrtc_camera(model)
         return
 
-    # ── Original localhost cv2 path (100% unchanged) ──────────────────────────
-    st.markdown("<div class='card'><h2>📹 Live Camera</h2></div>", unsafe_allow_html=True)
+    # ── Original localhost cv2 path (100% unchanged) ──────────────────────
+    st.markdown(
+        "<div class='card'><h2>📹 Live Camera</h2></div>",
+        unsafe_allow_html=True,
+    )
     col1, col2 = st.columns(2)
     with col1:
-        start_camera = st.button("▶ Start Camera", use_container_width=True)
+        if st.button("▶ Start Camera", use_container_width=True, key="cam_start"):
+            st.session_state.run_camera = True
+            st.session_state.camera_active = True
+            reset_session_state()
     with col2:
-        stop_camera = st.button("⏹ Stop Camera", use_container_width=True)
-
-    if start_camera:
-        st.session_state.run_camera = True
-        st.session_state.camera_active = True
-        reset_session_state()
-        st.session_state.alarm_enabled = st.session_state.alarm_enabled
-
-    if stop_camera:
-        st.session_state.run_camera = False
-        st.session_state.camera_active = False
+        if st.button("⏹ Stop Camera", use_container_width=True, key="cam_stop"):
+            st.session_state.run_camera = False
+            st.session_state.camera_active = False
 
     frame_placeholder = st.empty()
     status_placeholder = st.empty()
+
     if st.session_state.run_camera:
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
-            st.error("❌ Camera unavailable")
-            st.warning("Please verify a local webcam is attached or run in Upload Video mode.")
+            st.error("❌ Camera unavailable — check that a webcam is connected.")
             st.session_state.run_camera = False
             return
 
@@ -373,142 +415,143 @@ def render_live_camera(model):
 
         recorder = None
         if ENABLE_RECORDING:
-            path = VIDEO_OUTPUT_DIR / f"surveillance_{get_timestamp_string()}.avi"
-            recorder = VideoRecorder(str(path), (FRAME_WIDTH, FRAME_HEIGHT))
-            st.session_state.video_path = str(path)
+            vid_path = VIDEO_OUTPUT_DIR / f"surveillance_{get_timestamp_string()}.avi"
+            recorder = VideoRecorder(str(vid_path), (FRAME_WIDTH, FRAME_HEIGHT))
+            st.session_state.video_path = str(vid_path)
 
-        status_placeholder.info("🔄 Camera active - processing frames...")
+        status_placeholder.info("🔄 Camera active — processing frames…")
+
         while st.session_state.run_camera:
-            success, frame = cap.read()
-            if not success or frame is None:
+            ok, frame = cap.read()
+            if not ok or frame is None:
                 break
 
-            annotated_frame, detections, threat_score = process_frame(frame.copy(), model)
+            annotated, detections, threat_score = process_frame(frame.copy(), model)
             st.session_state.threat_history.append(threat_score)
+
             if should_alert(st.session_state.last_threat_score, threat_score, THREAT_THRESHOLD):
                 st.session_state.alert_count += 1
                 for det in detections:
                     st.session_state.suspicious_events.append(
-                        {
-                            "label": det["label"],
-                            "confidence": int(det["confidence"] * 100),
-                            "threat": int(det["confidence"] * 100),
-                        }
+                        {"label": det["label"], "confidence": int(det["confidence"] * 100), "threat": int(det["confidence"] * 100)}
                     )
                 if st.session_state.alarm_enabled:
                     play_alarm()
                 if len(st.session_state.screenshots) < MAX_SCREENSHOTS:
-                    path = capture_snapshot(annotated_frame, SNAPSHOT_OUTPUT_DIR, "camera_alert")
-                    if path:
-                        st.session_state.screenshots.append(str(path))
+                    p = capture_snapshot(annotated, SNAPSHOT_OUTPUT_DIR, "camera_alert")
+                    if p:
+                        st.session_state.screenshots.append(str(p))
 
             st.session_state.last_threat_score = threat_score
             if recorder and recorder.active:
-                recorder.write(annotated_frame)
+                recorder.write(annotated)
 
-            annotated_rgb = cv2.cvtColor(annotated_frame, cv2.COLOR_BGR2RGB)
-            frame_placeholder.image(annotated_rgb, use_container_width=True)
+            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+            frame_placeholder.image(rgb, use_container_width=True)
             time.sleep(0.03)
 
         cap.release()
         if recorder:
             recorder.stop()
-            status_placeholder.success("✅ Camera stopped and saved.")
-        else:
-            status_placeholder.success("✅ Camera stopped.")
+        status_placeholder.success("✅ Camera stopped.")
 
     if not st.session_state.run_camera and st.session_state.alert_count > 0:
         render_analysis_panel()
-        if ENABLE_RECORDING:
+        if ENABLE_RECORDING and st.session_state.video_path:
             st.markdown("---")
             st.markdown("## 📹 Recorded Video")
-            save_video_if_ready(st.session_state.video_path)
-        elif DEPLOYMENT_MODE:
-            st.info("Deployment mode active: camera recording is disabled.")
+            vp = Path(st.session_state.video_path)
+            if vp.exists():
+                with open(str(vp), "rb") as f:
+                    st.download_button(
+                        "📥 Download Recorded Video",
+                        data=f.read(),
+                        file_name=vp.name,
+                        mime="video/x-msvideo",
+                        use_container_width=True,
+                    )
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 # UPLOAD VIDEO MODE (unchanged)
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 
 def render_upload_mode(model):
-    st.markdown("<div class='card'><h2>📤 Upload Video</h2></div>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Choose a video file", type=["mp4", "avi", "mov", "mkv"])
-    if uploaded_file is None:
+    st.markdown(
+        "<div class='card'><h2>📤 Upload Video</h2></div>",
+        unsafe_allow_html=True,
+    )
+    uploaded = st.file_uploader(
+        "Choose a video file", type=["mp4", "avi", "mov", "mkv"], key="video_upload"
+    )
+    if uploaded is None:
         return
 
-    if model is None:
-        st.warning("Model failed to load. Upload may still work after retry, but accurate detection could be unavailable.")
-
-    if st.button("🔍 Analyze Video", use_container_width=True):
-        temp_dir = Path(tempfile.gettempdir())
-        temp_video = temp_dir / uploaded_file.name
-        temp_video.write_bytes(uploaded_file.getbuffer())
+    if st.button("🔍 Analyze Video", use_container_width=True, key="analyze_btn"):
+        tmp = Path(tempfile.gettempdir()) / uploaded.name
+        tmp.write_bytes(uploaded.getbuffer())
 
         try:
-            cap = cv2.VideoCapture(str(temp_video))
+            cap = cv2.VideoCapture(str(tmp))
             if not cap.isOpened():
-                st.error("❌ Failed to open uploaded video. Please upload a supported file.")
+                st.error("❌ Could not open the uploaded video.")
                 return
 
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            progress_bar = st.progress(0)
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            progress = st.progress(0)
             status = st.empty()
-            status.info("🔄 Processing uploaded video...")
+            status.info("🔄 Processing video…")
 
             reset_session_state()
-            frame_count = 0
-            screenshot_timer = time.time() - 10
+            count = 0
+            last_shot = time.time() - 10
 
             while True:
-                success, frame = cap.read()
-                if not success or frame is None:
+                ok, frame = cap.read()
+                if not ok or frame is None:
                     break
-
-                frame_count += 1
-                annotated_frame, detections, threat_score = process_frame(frame.copy(), model)
+                count += 1
+                annotated, detections, threat_score = process_frame(frame.copy(), model)
                 st.session_state.threat_history.append(threat_score)
+
                 if threat_score > THREAT_THRESHOLD:
                     st.session_state.alert_count += 1
                     for det in detections:
                         st.session_state.suspicious_events.append(
-                            {
-                                "label": det["label"],
-                                "confidence": int(det["confidence"] * 100),
-                                "threat": int(det["confidence"] * 100),
-                            }
+                            {"label": det["label"], "confidence": int(det["confidence"] * 100), "threat": int(det["confidence"] * 100)}
                         )
-                    if len(st.session_state.screenshots) < MAX_SCREENSHOTS and time.time() - screenshot_timer > 2.0:
-                        path = capture_snapshot(annotated_frame, SNAPSHOT_OUTPUT_DIR, "upload_alert")
-                        if path:
-                            st.session_state.screenshots.append(str(path))
-                            screenshot_timer = time.time()
+                    if len(st.session_state.screenshots) < MAX_SCREENSHOTS and time.time() - last_shot > 2.0:
+                        p = capture_snapshot(annotated, SNAPSHOT_OUTPUT_DIR, "upload_alert")
+                        if p:
+                            st.session_state.screenshots.append(str(p))
+                            last_shot = time.time()
 
-                if total_frames:
-                    progress_bar.progress(min(frame_count / total_frames, 1.0))
+                if total:
+                    progress.progress(min(count / total, 1.0))
 
             st.session_state.analysis_complete = True
             st.session_state.upload_results = True
             status.success("✅ Video analysis complete.")
         except Exception as exc:
-            st.error(f"❌ Error processing upload: {exc}")
+            st.error(f"❌ Error: {exc}")
         finally:
             try:
                 cap.release()
             except Exception:
                 pass
-            if temp_video.exists():
-                temp_video.unlink()
+            if tmp.exists():
+                tmp.unlink()
 
-    if st.session_state.upload_results and st.session_state.alert_count > 0:
-        render_analysis_panel()
-    elif st.session_state.upload_results and st.session_state.alert_count == 0:
-        st.info("No alerts were detected in the uploaded video.")
+    if st.session_state.upload_results:
+        if st.session_state.alert_count > 0:
+            render_analysis_panel()
+        else:
+            st.info("No threats detected in the uploaded video.")
 
 
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 # MAIN
-# ═══════════════════════════════════════════════════════════════════════════════
+# ─────────────────────────────────────────────────────────────────────────────
 
 def main():
     init_session_state()
@@ -517,24 +560,26 @@ def main():
 
     with st.sidebar:
         st.title("⚙️ Controls")
-        # In cloud mode Live Camera is now supported via WebRTC
-        mode_options = ["Live Camera", "Upload Video"]
-        mode = st.radio("Select mode", mode_options)
+        mode = st.radio("Select mode", ["Live Camera", "Upload Video"], key="mode_radio")
         st.markdown("---")
-        st.markdown("**Model status**")
+        st.markdown("**Model**")
         if model is not None:
-            st.success("✓ YOLO model loaded")
+            st.success("✓ YOLO loaded")
         else:
             st.error("✗ Model failed to load")
         st.markdown("---")
-        st.session_state.alarm_enabled = st.checkbox("Enable alarm", value=st.session_state.alarm_enabled)
-        st.markdown(f"**Deployment mode:** {'ON ☁️' if DEPLOYMENT_MODE else 'OFF 🖥️'}")
-        if DEPLOYMENT_MODE:
-            st.info("🌐 Cloud mode — browser WebCam via WebRTC")
+        if not DEPLOYMENT_MODE:
+            # In cloud mode the alarm checkbox lives inside render_webrtc_camera
+            st.session_state.alarm_enabled = st.checkbox(
+                "🔔 Enable alarm",
+                value=st.session_state.alarm_enabled,
+                key="alarm_sidebar",
+            )
+        mode_label = "ON ☁️ (WebRTC camera)" if DEPLOYMENT_MODE else "OFF 🖥️ (local webcam)"
+        st.markdown(f"**Deployment mode:** {mode_label}")
         st.markdown("---")
-        st.markdown("**Report outputs**")
-        st.write(f"Reports: {REPORT_OUTPUT_DIR}")
-        st.write(f"Snapshots: {SNAPSHOT_OUTPUT_DIR}")
+        st.caption(f"Snapshots: {SNAPSHOT_OUTPUT_DIR}")
+        st.caption(f"Reports: {REPORT_OUTPUT_DIR}")
 
     if mode == "Live Camera":
         render_live_camera(model)
@@ -544,7 +589,7 @@ def main():
     st.markdown("---")
     st.markdown(
         "<div style='text-align:center;color:gray;font-size:12px;'>"
-        "Deployment-ready architecture with modular services and centralized config."
+        "AI Surveillance System · YOLOv8 · Streamlit · streamlit-webrtc"
         "</div>",
         unsafe_allow_html=True,
     )
