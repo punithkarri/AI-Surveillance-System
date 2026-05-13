@@ -59,15 +59,15 @@ jobs:
           # ── Step 2: Define what to skip ───────────────────────────────────────
           SKIP_DIR_NAMES = {
               ".git", ".github", "__pycache__", ".vscode",
-              "models", "outputs", "screenshots", "src",
+              "outputs", "screenshots", "src",
           }
           SKIP_FILES = {
-              "yolov8n.pt", "yolov8s.pt",
+              "yolov8s.pt",
               "output.avi", "output.mp4", "alarm.wav", "alerts.png",
               "implementation_plan.md", "IMPROVEMENTS.md",
               "surveillance_report_20260502_204641.csv",
           }
-          SKIP_EXTENSIONS = {".pt", ".avi", ".mp4", ".wav", ".pyc", ".pyo"}
+          SKIP_EXTENSIONS = {".avi", ".mp4", ".wav", ".pyc", ".pyo"}
           MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
           # ── Step 3: Upload ────────────────────────────────────────────────────
