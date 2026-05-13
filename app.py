@@ -2,6 +2,7 @@
 AI Surveillance System — Streamlit App
 =======================================
 Entry point for both local and Hugging Face Spaces deployment.
+# Triggering HF Space rebuild
 
 Routing logic:
   DEPLOYMENT_MODE=True  (HF Spaces / SPACE_ID env var set)
