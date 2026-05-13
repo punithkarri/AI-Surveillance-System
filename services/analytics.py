@@ -6,7 +6,7 @@ def build_threat_timeline(threat_history):
     fig.add_trace(
         go.Scatter(
             x=list(range(len(threat_history))),
-            y=threat_history,
+            y=list(threat_history),
             mode="lines+markers",
             marker=dict(color="#1f77b4"),
             line=dict(shape="spline", smoothing=0.7),
