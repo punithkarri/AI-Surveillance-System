@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: red
 sdk: streamlit
 sdk_version: 1.32.0
-app_file: hf_app.py
+app_file: app.py
 pinned: false
 ---
 
