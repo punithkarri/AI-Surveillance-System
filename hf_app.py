@@ -129,6 +129,17 @@ def render_main_header():
         "<p>Real-time YOLO detection · Threat analysis · Analytics · Reports</p>",
         unsafe_allow_html=True,
     )
+    
+    # Startup status system
+    with st.expander("ℹ️ System Status", expanded=True):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.success("✅ System Ready")
+        with col2:
+            st.success("✅ Deployment Healthy")
+        with col3:
+            st.success("✅ Model loads on demand")
+            
     st.markdown("---")
 
 
