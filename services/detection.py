@@ -73,7 +73,7 @@ def process_frame(frame, model):
     frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
 
     try:
-        results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD)
+        results = model(frame, verbose=False, conf=CONFIDENCE_THRESHOLD, imgsz=640, half=False)
     except Exception:
         return frame, [], 0
 

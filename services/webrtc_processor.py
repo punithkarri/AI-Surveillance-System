@@ -10,8 +10,9 @@ Usage:
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import List
+from typing import List, Deque
 
 import av
 import cv2
@@ -49,8 +50,8 @@ class SharedState:
     """
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    threat_history: List[int] = field(default_factory=list)
-    suspicious_events: List[dict] = field(default_factory=list)
+    threat_history: Deque[int] = field(default_factory=lambda: deque(maxlen=100))
+    suspicious_events: Deque[dict] = field(default_factory=lambda: deque(maxlen=100))
     alert_count: int = 0
     screenshots: List[str] = field(default_factory=list)
     last_threat_score: int = 0
@@ -115,10 +116,8 @@ class SurveillanceProcessor(VideoProcessorBase):
             now = time.time()
 
             with self.state._lock:
-                # Threat history (bounded to 500 entries to prevent memory growth)
+                # Threat history (bounded by deque)
                 self.state.threat_history.append(threat_score)
-                if len(self.state.threat_history) > 500:
-                    self.state.threat_history = self.state.threat_history[-500:]
 
                 prev_threat = self.state.last_threat_score
                 self.state.last_threat_score = threat_score
@@ -135,16 +134,20 @@ class SurveillanceProcessor(VideoProcessorBase):
                             "threat": int(det["confidence"] * 100),
                         })
 
-                # Auto-screenshot: max every 3 s, cap at MAX_SCREENSHOTS
-                if (
-                    threat_score > THREAT_THRESHOLD
-                    and len(self.state.screenshots) < MAX_SCREENSHOTS
-                    and now - self._last_screenshot_ts > 3.0
-                ):
+                # Auto-screenshot: max every 3 s, cap at 20 (auto-delete oldest)
+                if threat_score > THREAT_THRESHOLD and now - self._last_screenshot_ts > 3.0:
                     path = capture_snapshot(annotated, SNAPSHOT_OUTPUT_DIR, "webrtc_alert")
                     if path:
                         self.state.screenshots.append(str(path))
                         self._last_screenshot_ts = now
+                        if len(self.state.screenshots) > 20:
+                            oldest_shot = self.state.screenshots.pop(0)
+                            try:
+                                import os
+                                if os.path.exists(oldest_shot):
+                                    os.remove(oldest_shot)
+                            except Exception:
+                                pass
 
             # BGR → RGB for WebRTC output
             annotated_rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
