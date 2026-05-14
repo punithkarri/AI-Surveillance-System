@@ -1,9 +1,10 @@
 [server]
 headless = true
 address = "0.0.0.0"
-port = 7860
+port = 8501
 enableCORS = false
 enableXsrfProtection = false
+maxUploadSize = 512
 
 [browser]
 gatherUsageStats = false

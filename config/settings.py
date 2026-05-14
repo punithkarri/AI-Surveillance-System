@@ -50,23 +50,43 @@ FRAME_WIDTH = _env_int("FRAME_WIDTH", 640)
 FRAME_HEIGHT = _env_int("FRAME_HEIGHT", 480)
 MAX_SCREENSHOTS = _env_int("MAX_SCREENSHOTS", 10)
 ALARM_COOLDOWN_SECONDS = _env_float("ALARM_COOLDOWN_SECONDS", 1.5)
-DEPLOYMENT_MODE = os.getenv("SPACE_ID") is not None
+DEPLOYMENT_MODE = os.getenv("SPACE_ID") is not None or _env_bool("DEPLOYMENT_MODE", False)
 ENABLE_CAMERA = not DEPLOYMENT_MODE
 ENABLE_RECORDING = not DEPLOYMENT_MODE
 
 ALLOWED_CLASSES = {
-    "person",
-    "cell phone",
-    "laptop",
-    "book",
-    "tablet",
-    "bottle",
+    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat",
+    "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog",
+    "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella",
+    "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite",
+    "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+    "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich",
+    "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
+    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote",
+    "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book",
+    "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush",
 }
 THREAT_CLASS_SCORES = {
+    "person": 20,
     "cell phone": 85,
     "laptop": 70,
-    "book": 55,
+    "backpack": 45,
+    "handbag": 45,
+    "book": 40,
+    "bottle": 30,
     "tablet": 65,
+    "tv": 55,
+    "keyboard": 40,
+    "remote": 35,
+    "chair": 15,
+    "couch": 15,
+    "sports ball": 20,
+    "frisbee": 20,
+    "skateboard": 25,
+    "surfboard": 25,
+    "tie": 30,
+    "suitcase": 35,
+    "umbrella": 20,
 }
 
 EMAIL_SMTP_SERVER = os.getenv("EMAIL_SMTP_SERVER", "")

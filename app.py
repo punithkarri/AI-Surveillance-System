@@ -33,7 +33,7 @@ from config.settings import (
     VIDEO_OUTPUT_DIR,
 )
 from services.analytics import build_risk_pie, build_threat_timeline
-from services.alerts import capture_snapshot, play_alarm, should_alert
+from services.alerts import capture_snapshot, play_alarm, should_alert, start_alarm, stop_alarm
 from services.detection import load_model, process_frame
 from services.recording import VideoRecorder
 from services.reporting import (
@@ -101,6 +101,8 @@ def init_session_state():
         "last_threat_score": 0,
         "analysis_complete": False,
         "upload_results": False,
+        "alarm_active": False,
+        "last_screenshot_time": 0.0,
         "webrtc_shared_state": None,  # SharedState instance (cloud mode)
     }
     for key, val in defaults.items():
@@ -109,6 +111,9 @@ def init_session_state():
 
 
 def reset_session_state():
+    if st.session_state.get("alarm_active", False):
+        stop_alarm()
+
     st.session_state.alert_count = 0
     st.session_state.suspicious_events.clear()
     st.session_state.threat_history.clear()
@@ -117,6 +122,8 @@ def reset_session_state():
     st.session_state.analysis_complete = False
     st.session_state.upload_results = False
     st.session_state.video_path = None
+    st.session_state.alarm_active = False
+    st.session_state.last_screenshot_time = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -332,6 +339,13 @@ def render_webrtc_camera(model):
 
     if streaming:
         st.session_state.camera_active = True
+        st.markdown(
+            "<div style='font-size:12px;color:#666;margin-bottom:10px;'>"
+            "Auto-refreshing live analytics every 2 seconds while the browser camera is active." 
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.autorefresh(interval=2000, key="webrtc_refresh_timer")
 
         live_col1, live_col2 = st.columns([3, 2])
 
@@ -445,22 +459,45 @@ def render_live_camera(model):
                     st.session_state.alert_count += 1
                     for det in detections:
                         st.session_state.suspicious_events.append(
-                            {"label": det["label"], "confidence": int(det["confidence"] * 100), "threat": int(det["confidence"] * 100)}
+                            {"label": det["label"], "confidence": int(det["confidence"] * 100), "threat": int(det.get("threat", 0))}
                         )
-                    if st.session_state.alarm_enabled:
-                        play_alarm()
-                    if len(st.session_state.screenshots) < MAX_SCREENSHOTS:
+
+                if threat_score >= THREAT_THRESHOLD:
+                    print("Alarm condition triggered", threat_score, THREAT_THRESHOLD)
+                    if st.session_state.alarm_enabled and not st.session_state.alarm_active:
+                        start_alarm()
+                        print("start_alarm called")
+                    st.session_state.alarm_active = True
+                    if (
+                        time.time() - st.session_state.last_screenshot_time > 3.0
+                        and len(st.session_state.screenshots) < MAX_SCREENSHOTS
+                    ):
                         p = capture_snapshot(annotated, SNAPSHOT_OUTPUT_DIR, "camera_alert")
                         if p:
                             st.session_state.screenshots.append(str(p))
+                            st.session_state.last_screenshot_time = time.time()
+                elif st.session_state.alarm_active:
+                    print("Alarm stop requested", threat_score)
+                    stop_alarm()
+                    st.session_state.alarm_active = False
 
                 st.session_state.last_threat_score = threat_score
                 if recorder and recorder.active:
                     recorder.write(annotated)
 
                 rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(rgb, use_container_width=True)
+
+                if st.session_state.get("alarm_active", False):
+                    st.markdown(
+                        "<div style='background:#ffdddd;border:2px solid #ff4d4f;"
+                        "padding:12px 16px;margin-bottom:8px;border-radius:8px;"
+                        "font-weight:700;color:#a8071a;'>🚨 HIGH THREAT DETECTED - ALARM ACTIVE</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                frame_placeholder.image(rgb, width='stretch')
                 time.sleep(0.03)
+
         finally:
             cap.release()
             if recorder:

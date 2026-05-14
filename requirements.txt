@@ -8,3 +8,6 @@ pandas
 plotly
 av
 pillow
+pygame
+python-dotenv
+matplotlib

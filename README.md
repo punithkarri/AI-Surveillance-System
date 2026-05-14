@@ -64,12 +64,12 @@ When cloud mode is active:
 ## Hugging Face Spaces
 
 1. Create a new Space using the `streamlit` SDK.
-2. Add this repository files, including `requirements.txt`, `.env.example`, and `.streamlit/config.toml`.
-3. Set `DEPLOYMENT_MODE=true` in the Space secrets or `.env` file.
+2. Add this repository files, including `requirements.txt`, `packages.txt`, `.env.example`, and `.streamlit/config.toml`.
+3. Set `DEPLOYMENT_MODE=true` in the Space secrets or `.env` file, or rely on `SPACE_ID` auto-detection in Hugging Face Spaces.
 4. Ensure the `models/` folder contains `yolov8n.pt` or allow the model to auto-download.
 5. Start the app with the default Streamlit web app launcher.
 
-> Note: Spaces does not support webcam access, so Upload Video is the recommended mode.
+> Note: Browser webcam support is now enabled in Hugging Face Spaces using `streamlit-webrtc`. Click **START** and allow camera access to run live YOLO detection, bounding boxes, threat scoring, screenshots, analytics and alerts in the browser.
 
 ## Render
 
@@ -104,7 +104,9 @@ Generated files are stored in:
 ## Webcam Limitations
 
 - Local webcam mode only works on a machine with an attached webcam.
-- In cloud deployment, webcam functionality is disabled and the app falls back to Upload Video.
+- In Hugging Face Spaces, browser webcam access is supported through `streamlit-webrtc`.
+- Allow camera permission when prompted to enable live browser surveillance, detection, and alerts.
+- Upload Video mode remains available as a cloud-friendly fallback.
 
 ## Requirements
 
